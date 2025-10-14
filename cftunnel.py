@@ -36,17 +36,38 @@ def get_api_token():
     if token:
         return token
     
-    # Try to extract from cert.pem (origin certificate)
-    # Note: cert.pem is an origin certificate, not an API token
-    # Users need to set CLOUDFLARE_API_TOKEN environment variable
-    if not token:
-        print("Warning: CLOUDFLARE_API_TOKEN environment variable not set.")
-        print("To use access authentication, please set your Cloudflare API token:")
-        print("export CLOUDFLARE_API_TOKEN='your-api-token'")
-        print("You can create an API token at: https://dash.cloudflare.com/profile/api-tokens")
-        return None
+    # Try to extract from cert.pem file
+    # Some versions of cert.pem contain the API key/token
+    try:
+        if os.path.exists(CERT_FILE):
+            with open(CERT_FILE, 'r') as f:
+                cert_content = f.read()
+                
+            # Try to parse as JSON (newer format)
+            try:
+                cert_data = json.loads(cert_content)
+                # Check for API token in various possible fields
+                if 'APIToken' in cert_data:
+                    return cert_data['APIToken']
+                if 'APIKey' in cert_data:
+                    return cert_data['APIKey']
+            except json.JSONDecodeError:
+                # cert.pem is in PEM format, not JSON
+                # PEM format doesn't contain API tokens
+                pass
+    except Exception as e:
+        # Failed to read cert.pem, continue to show warning
+        pass
     
-    return token
+    # No token found
+    print("Warning: CLOUDFLARE_API_TOKEN environment variable not set.")
+    print("To use access authentication, please set your Cloudflare API token:")
+    print("export CLOUDFLARE_API_TOKEN='your-api-token'")
+    print("You can create an API token at: https://dash.cloudflare.com/profile/api-tokens")
+    print()
+    print("Note: The cert.pem from 'cloudflared login' is for tunnel authentication only.")
+    print("Access application creation requires an API token with 'Access' permissions.")
+    return None
 
 def get_account_id(api_token: str) -> Optional[str]:
     """Get Cloudflare account ID using the API."""

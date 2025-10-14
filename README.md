@@ -21,7 +21,11 @@ You can add email-based OTP (One-Time Password) authentication to your tunnel us
 python cftunnel.py --url http://localhost:8000 --domain kafkai.io --subdomain flyby-extension-stargate --access-email=*@mycompany.com
 ```
 
-This requires setting the `CLOUDFLARE_API_TOKEN` environment variable:
+### API Token Setup
+
+**Important:** While `cloudflared login` authenticates you for tunnel operations, creating Cloudflare Access applications requires additional API permissions.
+
+You need to set the `CLOUDFLARE_API_TOKEN` environment variable with a token that has Access permissions:
 
 ```
 export CLOUDFLARE_API_TOKEN='your-api-token-here'
@@ -32,6 +36,8 @@ You can create an API token at: https://dash.cloudflare.com/profile/api-tokens
 The API token needs the following permissions:
 - Account > Cloudflare Access > Edit
 - Zone > Zone > Read
+
+**Why is this needed?** The cert.pem file from `cloudflared login` is an origin certificate for tunnel authentication. It doesn't include permissions to manage Zero Trust Access applications, which are part of Cloudflare's security features and require explicit API access.
 
 ### Bypass Paths
 
