@@ -10,5 +10,35 @@ python cftunnel.py --url http://localhost:8000 --domain kafkai.io
 To specify the exact sub-domain or reuse existing sub-domain:-
 
 ```
-python cftunnel.py --url http://localhost:8000 --domain kafkai.io --sub-domain flyby-extension-stargate
+python cftunnel.py --url http://localhost:8000 --domain kafkai.io --subdomain flyby-extension-stargate
 ```
+
+## Access Authentication
+
+You can add email-based OTP (One-Time Password) authentication to your tunnel using Cloudflare Access:
+
+```
+python cftunnel.py --url http://localhost:8000 --domain kafkai.io --subdomain flyby-extension-stargate --access-email=*@mycompany.com
+```
+
+This requires setting the `CLOUDFLARE_API_TOKEN` environment variable:
+
+```
+export CLOUDFLARE_API_TOKEN='your-api-token-here'
+```
+
+You can create an API token at: https://dash.cloudflare.com/profile/api-tokens
+
+The API token needs the following permissions:
+- Account > Cloudflare Access > Edit
+- Zone > Zone > Read
+
+### Bypass Paths
+
+You can specify certain paths that should bypass authentication:
+
+```
+python cftunnel.py --url http://localhost:8000 --domain kafkai.io --subdomain flyby-extension-stargate --access-email=*@mycompany.com --access-path-bypass=/api/stripe/ --access-path-bypass=/webhooks/
+```
+
+Users accessing paths like `/api/stripe/` or `/webhooks/` will not need to authenticate, while all other paths will require email OTP verification.
