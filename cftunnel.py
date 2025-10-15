@@ -296,6 +296,87 @@ def create_access_policy(
             except:
                 print(f"Response text: {e.response.text}")
 
+def delete_access_application(
+    api_token: str,
+    account_id: str,
+    app_id: str
+) -> bool:
+    """Delete a Cloudflare Access Application."""
+    headers = {
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        response = requests.delete(
+            f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps/{app_id}',
+            headers=headers
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get('success'):
+            print(f"Access application {app_id} deleted successfully")
+            return True
+        else:
+            print(f"Failed to delete access application: {data.get('errors')}")
+            return False
+    except Exception as e:
+        print(f"Error deleting access application: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            try:
+                error_data = e.response.json()
+                print(f"API Error Details: {error_data}")
+            except:
+                print(f"Response text: {e.response.text}")
+        return False
+
+def remove_access_for_domain(
+    api_token: str,
+    account_id: str,
+    domain: str
+) -> bool:
+    """Remove all Access Applications for a specific domain."""
+    headers = {
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        # List all access applications
+        response = requests.get(
+            f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps',
+            headers=headers
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get('success') and data.get('result'):
+            deleted_count = 0
+            # Find and delete all applications matching the domain
+            for app in data['result']:
+                app_domain = app.get('domain', '')
+                # Match exact domain or domain with paths (for bypass apps)
+                if app_domain == domain or app_domain.startswith(f"{domain}/"):
+                    app_id = app.get('id')
+                    app_name = app.get('name', 'Unknown')
+                    print(f"Deleting application '{app_name}' (ID: {app_id})...")
+                    if delete_access_application(api_token, account_id, app_id):
+                        deleted_count += 1
+            
+            if deleted_count > 0:
+                print(f"\nSuccessfully deleted {deleted_count} Access Application(s)")
+                return True
+            else:
+                print(f"No Access Applications found for domain: {domain}")
+                return False
+        else:
+            print(f"Failed to list access applications: {data.get('errors')}")
+            return False
+    except Exception as e:
+        print(f"Error listing access applications: {e}")
+        return False
+
 def create_bypass_applications(
     api_token: str,
     account_id: str,
@@ -397,8 +478,7 @@ def main():
     )
     parser.add_argument(
         "--url",
-        required=True,
-        help="The local service URL (e.g., http://localhost:8000)"
+        help="The local service URL (e.g., http://localhost:8000). Required unless using --remove-access."
     )
     parser.add_argument(
         "--domain",
@@ -418,8 +498,52 @@ def main():
         action='append',
         help="Paths that bypass authentication (can be specified multiple times)."
     )
+    parser.add_argument(
+        "--remove-access",
+        action='store_true',
+        help="Remove all Access Applications for the specified domain. Requires --domain and CLOUDFLARE_API_TOKEN."
+    )
 
     args = parser.parse_args()
+
+    # Handle --remove-access flag (early exit)
+    if args.remove_access:
+        print("--- Removing Access Applications ---")
+        api_token = get_api_token()
+        if not api_token:
+            print("Error: CLOUDFLARE_API_TOKEN is required to remove Access Applications.")
+            sys.exit(1)
+        
+        base_domain = args.domain
+        # If subdomain is specified, use it; otherwise we need to ask or list all
+        if args.subdomain:
+            public_hostname = f"{args.subdomain}.{base_domain}"
+            print(f"Removing Access Applications for: {public_hostname}")
+        else:
+            print("Error: --subdomain is required with --remove-access to specify which domain to remove.")
+            print("Example: --remove-access --domain kafkai.io --subdomain my-app")
+            sys.exit(1)
+        
+        # Get account ID
+        account_id = get_account_id(api_token)
+        if not account_id:
+            print("Error: Could not retrieve account ID.")
+            sys.exit(1)
+        
+        # Remove access applications
+        if remove_access_for_domain(api_token, account_id, public_hostname):
+            print("Access Applications removed successfully!")
+        else:
+            print("Failed to remove Access Applications.")
+            sys.exit(1)
+        
+        sys.exit(0)
+
+    # Validate that --url is provided when not removing access
+    if not args.url:
+        print("Error: --url is required (unless using --remove-access)")
+        parser.print_help()
+        sys.exit(1)
 
     local_url = args.url
     base_domain = args.domain

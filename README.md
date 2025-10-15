@@ -48,3 +48,18 @@ python cftunnel.py --url http://localhost:8000 --domain kafkai.io --subdomain fl
 ```
 
 Users accessing paths like `/api/stripe/` or `/webhooks/` will not need to authenticate, while all other paths will require email OTP verification.
+
+### Removing Access Applications
+
+When you no longer need access authentication for a domain, you can remove all Access Applications with a single command:
+
+```
+python cftunnel.py --remove-access --domain kafkai.io --subdomain flyby-extension-stargate
+```
+
+This will:
+- Remove the main Access Application for the domain
+- Remove any bypass applications for paths (e.g., `/api/stripe/`)
+- Clean up all associated policies
+
+**Note:** You need `CLOUDFLARE_API_TOKEN` set and the `--subdomain` parameter to specify which domain to clean up.
