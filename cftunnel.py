@@ -486,17 +486,6 @@ def create_bypass_applications(
 def main():
     """Main function to parse arguments and create the tunnel."""
 
-    # --- Initial Check & Instructions ---
-    if not os.path.exists(CERT_FILE):
-        print("--- IMPORTANT: One-Time Manual Setup Required ---")
-        print("It seems you have not authenticated with Cloudflare yet.")
-        print("Please run the following command in your terminal first:")
-        print("cloudflared tunnel login")
-        print("This will open a browser window for you to log in.")
-        print("After successful login, run this script again.")
-        print("-" * 20)
-        sys.exit(0)
-
     parser = argparse.ArgumentParser(
         description="Automatically creates a Cloudflare tunnel.",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -562,6 +551,21 @@ def main():
             print("Failed to remove Access Applications.")
             sys.exit(1)
         
+        sys.exit(0)
+
+    # --- Initial Check & Instructions for tunnel operations ---
+    # Only require cert.pem if we're creating/running a tunnel (not just managing Access)
+    if not os.path.exists(CERT_FILE):
+        print("--- IMPORTANT: One-Time Manual Setup Required ---")
+        print("It seems you have not authenticated with Cloudflare yet.")
+        print("Please run the following command in your terminal first:")
+        print("cloudflared tunnel login")
+        print("This will open a browser window for you to log in.")
+        print("After successful login, run this script again.")
+        print()
+        print("Note: If you only want to manage Access Applications (using --remove-access),")
+        print("you don't need cloudflared login. Just set CLOUDFLARE_API_TOKEN environment variable.")
+        print("-" * 20)
         sys.exit(0)
 
     # Validate that --url is provided when not removing access
