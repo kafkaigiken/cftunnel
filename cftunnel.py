@@ -190,19 +190,36 @@ def create_access_policy(
         'Content-Type': 'application/json'
     }
     
-    # Create the include rule for email pattern matching
-    include_rules = [
-        {
-            'email': {
-                'email': email_pattern
+    # For OTP-based authentication, we need to use a different approach
+    # The email pattern matching should be done through the include rules
+    # with an 'email_domain' selector for domain-based matching
+    
+    # Check if email pattern is a wildcard domain (e.g., *@domain.com)
+    if email_pattern.startswith('*@'):
+        # Extract domain from pattern
+        domain = email_pattern[2:]  # Remove '*@' prefix
+        include_rules = [
+            {
+                'email_domain': {
+                    'domain': domain
+                }
             }
-        }
-    ]
+        ]
+    else:
+        # Specific email address
+        include_rules = [
+            {
+                'email': {
+                    'email': email_pattern
+                }
+            }
+        ]
     
     # Main policy configuration
+    # Use 'allow' decision for identity-based policies (not 'non_identity')
     policy_config = {
         'name': 'Email OTP Policy',
-        'decision': 'non_identity',  # Use one-time PIN
+        'decision': 'allow',  # Changed from 'non_identity'
         'include': include_rules
     }
     
