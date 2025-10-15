@@ -137,10 +137,7 @@ def create_access_application(
         'type': 'self_hosted',
         'session_duration': '24h',
         'auto_redirect_to_identity': False,
-        'allowed_idps': [],  # Empty means use one-time PIN
-        'cors_headers': {
-            'enabled': False
-        }
+        'allowed_idps': []  # Empty means use one-time PIN
     }
     
     # Add path bypass if specified
