@@ -8,7 +8,9 @@ import random
 import uuid
 import re
 import json
-import requests
+import urllib.request
+import urllib.error
+import urllib.parse
 from typing import Optional, List
 
 # --- Configuration Variables ---
@@ -19,6 +21,32 @@ CERT_FILE = os.path.join(CONFIG_DIR, "cert.pem")
 WORD_LIST_1 = ["bridge", "connect", "secure", "proxy", "global"]
 WORD_LIST_2 = ["fast", "agile", "tunnel", "link", "cloud"]
 WORD_LIST_3 = ["node", "app", "service", "gateway", "extension"]
+
+def make_api_request(url: str, method: str = 'GET', headers: dict = None, data: dict = None):
+    """Make an HTTP request using urllib (standard library)."""
+    if headers is None:
+        headers = {}
+    
+    req_data = None
+    if data is not None:
+        req_data = json.dumps(data).encode('utf-8')
+        headers['Content-Type'] = 'application/json'
+    
+    request = urllib.request.Request(url, data=req_data, headers=headers, method=method)
+    
+    try:
+        with urllib.request.urlopen(request) as response:
+            response_data = response.read().decode('utf-8')
+            return json.loads(response_data), response.status
+    except urllib.error.HTTPError as e:
+        error_data = e.read().decode('utf-8')
+        try:
+            error_json = json.loads(error_data)
+        except:
+            error_json = {'error': error_data}
+        raise urllib.error.HTTPError(e.url, e.code, e.msg, e.hdrs, None) from e
+    except urllib.error.URLError as e:
+        raise e
 
 def generate_subdomain():
     """Generates a unique, three-word subdomain."""
@@ -77,9 +105,7 @@ def get_account_id(api_token: str) -> Optional[str]:
     }
     
     try:
-        response = requests.get('https://api.cloudflare.com/client/v4/accounts', headers=headers)
-        response.raise_for_status()
-        data = response.json()
+        data, status = make_api_request('https://api.cloudflare.com/client/v4/accounts', headers=headers)
         
         if data.get('success') and data.get('result'):
             # Return the first account ID
@@ -99,12 +125,10 @@ def get_zone_id(api_token: str, domain: str) -> Optional[str]:
     }
     
     try:
-        response = requests.get(
+        data, status = make_api_request(
             f'https://api.cloudflare.com/client/v4/zones?name={domain}',
             headers=headers
         )
-        response.raise_for_status()
-        data = response.json()
         
         if data.get('success') and data.get('result'):
             return data['result'][0]['id']
@@ -128,12 +152,10 @@ def get_existing_access_application(
     
     try:
         # List all access applications
-        response = requests.get(
+        data, status = make_api_request(
             f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps',
             headers=headers
         )
-        response.raise_for_status()
-        data = response.json()
         
         if data.get('success') and data.get('result'):
             # Look for an application with matching domain
@@ -189,13 +211,12 @@ def create_access_application(
     
     try:
         # Create the access application
-        response = requests.post(
+        data, status = make_api_request(
             f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps',
+            method='POST',
             headers=headers,
-            json=app_config
+            data=app_config
         )
-        response.raise_for_status()
-        data = response.json()
         
         if data.get('success') and data.get('result'):
             app_id = data['result']['id']
@@ -208,23 +229,26 @@ def create_access_application(
         else:
             print(f"Failed to create access application: {data.get('errors')}")
             return None
+    except urllib.error.HTTPError as e:
+        print(f"Error creating access application: {e}")
+        try:
+            error_data = e.read().decode('utf-8')
+            error_json = json.loads(error_data)
+            print(f"API Error Details: {error_json}")
+            
+            # Check if it's a conflict error (application already exists)
+            if e.code == 409:
+                print("Application already exists. Attempting to retrieve and use existing application...")
+                existing_app_id = get_existing_access_application(api_token, account_id, domain)
+                if existing_app_id:
+                    print(f"Found existing application with ID: {existing_app_id}")
+                    create_access_policy(api_token, account_id, existing_app_id, email_pattern, bypass_paths)
+                    return existing_app_id
+        except:
+            pass
+        return None
     except Exception as e:
         print(f"Error creating access application: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            try:
-                error_data = e.response.json()
-                print(f"API Error Details: {error_data}")
-                
-                # Check if it's a conflict error (application already exists)
-                if e.response.status_code == 409:
-                    print("Application already exists. Attempting to retrieve and use existing application...")
-                    existing_app_id = get_existing_access_application(api_token, account_id, domain)
-                    if existing_app_id:
-                        print(f"Found existing application with ID: {existing_app_id}")
-                        create_access_policy(api_token, account_id, existing_app_id, email_pattern, bypass_paths)
-                        return existing_app_id
-            except:
-                print(f"Response text: {e.response.text}")
         return None
 
 def create_access_policy(
@@ -275,26 +299,27 @@ def create_access_policy(
     
     try:
         # Create the policy
-        response = requests.post(
+        data, status = make_api_request(
             f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps/{app_id}/policies',
+            method='POST',
             headers=headers,
-            json=policy_config
+            data=policy_config
         )
-        response.raise_for_status()
-        data = response.json()
         
         if data.get('success'):
             print("Access policy created successfully")
         else:
             print(f"Failed to create access policy: {data.get('errors')}")
+    except urllib.error.HTTPError as e:
+        print(f"Error creating access policy: {e}")
+        try:
+            error_data = e.read().decode('utf-8')
+            error_json = json.loads(error_data)
+            print(f"API Error Details: {error_json}")
+        except:
+            pass
     except Exception as e:
         print(f"Error creating access policy: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            try:
-                error_data = e.response.json()
-                print(f"API Error Details: {error_data}")
-            except:
-                print(f"Response text: {e.response.text}")
 
 def delete_access_application(
     api_token: str,
@@ -308,12 +333,11 @@ def delete_access_application(
     }
     
     try:
-        response = requests.delete(
+        data, status = make_api_request(
             f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps/{app_id}',
+            method='DELETE',
             headers=headers
         )
-        response.raise_for_status()
-        data = response.json()
         
         if data.get('success'):
             print(f"Access application {app_id} deleted successfully")
@@ -321,14 +345,17 @@ def delete_access_application(
         else:
             print(f"Failed to delete access application: {data.get('errors')}")
             return False
+    except urllib.error.HTTPError as e:
+        print(f"Error deleting access application: {e}")
+        try:
+            error_data = e.read().decode('utf-8')
+            error_json = json.loads(error_data)
+            print(f"API Error Details: {error_json}")
+        except:
+            pass
+        return False
     except Exception as e:
         print(f"Error deleting access application: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            try:
-                error_data = e.response.json()
-                print(f"API Error Details: {error_data}")
-            except:
-                print(f"Response text: {e.response.text}")
         return False
 
 def remove_access_for_domain(
@@ -344,12 +371,10 @@ def remove_access_for_domain(
     
     try:
         # List all access applications
-        response = requests.get(
+        data, status = make_api_request(
             f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps',
             headers=headers
         )
-        response.raise_for_status()
-        data = response.json()
         
         if data.get('success') and data.get('result'):
             deleted_count = 0
@@ -412,13 +437,12 @@ def create_bypass_applications(
         
         try:
             # Create the bypass application
-            response = requests.post(
+            data, status = make_api_request(
                 f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps',
+                method='POST',
                 headers=headers,
-                json=app_config
+                data=app_config
             )
-            response.raise_for_status()
-            data = response.json()
             
             if data.get('success') and data.get('result'):
                 app_id = data['result']['id']
@@ -435,13 +459,12 @@ def create_bypass_applications(
                     ]
                 }
                 
-                policy_response = requests.post(
+                policy_data, policy_status = make_api_request(
                     f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps/{app_id}/policies',
+                    method='POST',
                     headers=headers,
-                    json=bypass_policy_config
+                    data=bypass_policy_config
                 )
-                policy_response.raise_for_status()
-                policy_data = policy_response.json()
                 
                 if policy_data.get('success'):
                     print(f"Bypass policy created for path: {path}")
@@ -449,14 +472,16 @@ def create_bypass_applications(
                     print(f"Warning: Failed to create bypass policy for {path}: {policy_data.get('errors')}")
             else:
                 print(f"Warning: Failed to create bypass application for {path}: {data.get('errors')}")
+        except urllib.error.HTTPError as e:
+            print(f"Error creating bypass application for {path}: {e}")
+            try:
+                error_data = e.read().decode('utf-8')
+                error_json = json.loads(error_data)
+                print(f"API Error Details: {error_json}")
+            except:
+                pass
         except Exception as e:
             print(f"Error creating bypass application for {path}: {e}")
-            if hasattr(e, 'response') and e.response is not None:
-                try:
-                    error_data = e.response.json()
-                    print(f"API Error Details: {error_data}")
-                except:
-                    print(f"Response text: {e.response.text}")
 
 def main():
     """Main function to parse arguments and create the tunnel."""
