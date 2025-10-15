@@ -7,6 +7,11 @@ import argparse
 import random
 import uuid
 import re
+import json
+import urllib.request
+import urllib.error
+import urllib.parse
+from typing import Optional, List
 
 # --- Configuration Variables ---
 CONFIG_DIR = os.path.expanduser("~/.cloudflared")
@@ -17,6 +22,32 @@ WORD_LIST_1 = ["bridge", "connect", "secure", "proxy", "global"]
 WORD_LIST_2 = ["fast", "agile", "tunnel", "link", "cloud"]
 WORD_LIST_3 = ["node", "app", "service", "gateway", "extension"]
 
+def make_api_request(url: str, method: str = 'GET', headers: dict = None, data: dict = None):
+    """Make an HTTP request using urllib (standard library)."""
+    if headers is None:
+        headers = {}
+    
+    req_data = None
+    if data is not None:
+        req_data = json.dumps(data).encode('utf-8')
+        headers['Content-Type'] = 'application/json'
+    
+    request = urllib.request.Request(url, data=req_data, headers=headers, method=method)
+    
+    try:
+        with urllib.request.urlopen(request) as response:
+            response_data = response.read().decode('utf-8')
+            return json.loads(response_data), response.status
+    except urllib.error.HTTPError as e:
+        error_data = e.read().decode('utf-8')
+        try:
+            error_json = json.loads(error_data)
+        except:
+            error_json = {'error': error_data}
+        raise urllib.error.HTTPError(e.url, e.code, e.msg, e.hdrs, None) from e
+    except urllib.error.URLError as e:
+        raise e
+
 def generate_subdomain():
     """Generates a unique, three-word subdomain."""
     word1 = random.choice(WORD_LIST_1)
@@ -26,19 +57,434 @@ def generate_subdomain():
     unique_id = str(uuid.uuid4())[:4]
     return f"{word1}-{word2}-{word3}-{unique_id}"
 
+def get_api_token():
+    """Get Cloudflare API token from cert.pem file or environment variable."""
+    # First try environment variable
+    token = os.environ.get('CLOUDFLARE_API_TOKEN')
+    if token:
+        return token
+    
+    # Try to extract from cert.pem file
+    # Some versions of cert.pem contain the API key/token
+    try:
+        if os.path.exists(CERT_FILE):
+            with open(CERT_FILE, 'r') as f:
+                cert_content = f.read()
+                
+            # Try to parse as JSON (newer format)
+            try:
+                cert_data = json.loads(cert_content)
+                # Check for API token in various possible fields
+                if 'APIToken' in cert_data:
+                    return cert_data['APIToken']
+                if 'APIKey' in cert_data:
+                    return cert_data['APIKey']
+            except json.JSONDecodeError:
+                # cert.pem is in PEM format, not JSON
+                # PEM format doesn't contain API tokens
+                pass
+    except Exception as e:
+        # Failed to read cert.pem, continue to show warning
+        pass
+    
+    # No token found
+    print("Warning: CLOUDFLARE_API_TOKEN environment variable not set.")
+    print("To use access authentication, please set your Cloudflare API token:")
+    print("export CLOUDFLARE_API_TOKEN='your-api-token'")
+    print("You can create an API token at: https://dash.cloudflare.com/profile/api-tokens")
+    print()
+    print("Note: The cert.pem from 'cloudflared login' is for tunnel authentication only.")
+    print("Access application creation requires an API token with 'Access' permissions.")
+    return None
+
+def get_account_id(api_token: str) -> Optional[str]:
+    """Get Cloudflare account ID using the API."""
+    headers = {
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        data, status = make_api_request('https://api.cloudflare.com/client/v4/accounts', headers=headers)
+        
+        if data.get('success') and data.get('result'):
+            # Return the first account ID
+            return data['result'][0]['id']
+        else:
+            print(f"Failed to get account ID: {data.get('errors')}")
+            return None
+    except Exception as e:
+        print(f"Error getting account ID: {e}")
+        return None
+
+def get_zone_id(api_token: str, domain: str) -> Optional[str]:
+    """Get Cloudflare zone ID for a domain."""
+    headers = {
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        data, status = make_api_request(
+            f'https://api.cloudflare.com/client/v4/zones?name={domain}',
+            headers=headers
+        )
+        
+        if data.get('success') and data.get('result'):
+            return data['result'][0]['id']
+        else:
+            print(f"Failed to get zone ID for domain {domain}: {data.get('errors')}")
+            return None
+    except Exception as e:
+        print(f"Error getting zone ID: {e}")
+        return None
+
+def get_existing_access_application(
+    api_token: str,
+    account_id: str,
+    domain: str
+) -> Optional[str]:
+    """Check if an Access Application already exists for the given domain."""
+    headers = {
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        # List all access applications
+        data, status = make_api_request(
+            f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps',
+            headers=headers
+        )
+        
+        if data.get('success') and data.get('result'):
+            # Look for an application with matching domain
+            for app in data['result']:
+                if app.get('domain') == domain:
+                    return app.get('id')
+        return None
+    except Exception as e:
+        print(f"Error checking for existing access application: {e}")
+        return None
+
+def create_access_application(
+    api_token: str,
+    account_id: str,
+    zone_id: str,
+    app_name: str,
+    domain: str,
+    email_pattern: str,
+    bypass_paths: Optional[List[str]] = None
+) -> Optional[str]:
+    """Create a Cloudflare Access Application with email OTP authentication."""
+    headers = {
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    # Check if application already exists for this domain
+    existing_app_id = get_existing_access_application(api_token, account_id, domain)
+    if existing_app_id:
+        print(f"Access application already exists with ID: {existing_app_id}")
+        print("Updating existing application with new policy...")
+        
+        # Create or update the access policy
+        create_access_policy(api_token, account_id, existing_app_id, email_pattern, bypass_paths)
+        
+        return existing_app_id
+    
+    # Build the application configuration
+    app_config = {
+        'name': app_name,
+        'domain': domain,
+        'type': 'self_hosted',
+        'session_duration': '24h',
+        'auto_redirect_to_identity': False,
+        'allowed_idps': []  # Empty means use one-time PIN
+    }
+    
+    # Add path bypass if specified
+    if bypass_paths:
+        # For Zero Trust Access, we need to create the application without path exclusions
+        # and handle them in the policy instead
+        pass
+    
+    try:
+        # Create the access application
+        data, status = make_api_request(
+            f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps',
+            method='POST',
+            headers=headers,
+            data=app_config
+        )
+        
+        if data.get('success') and data.get('result'):
+            app_id = data['result']['id']
+            print(f"Access application created with ID: {app_id}")
+            
+            # Create the access policy
+            create_access_policy(api_token, account_id, app_id, email_pattern, bypass_paths)
+            
+            return app_id
+        else:
+            print(f"Failed to create access application: {data.get('errors')}")
+            return None
+    except urllib.error.HTTPError as e:
+        print(f"Error creating access application: {e}")
+        try:
+            error_data = e.read().decode('utf-8')
+            error_json = json.loads(error_data)
+            print(f"API Error Details: {error_json}")
+            
+            # Check if it's a conflict error (application already exists)
+            if e.code == 409:
+                print("Application already exists. Attempting to retrieve and use existing application...")
+                existing_app_id = get_existing_access_application(api_token, account_id, domain)
+                if existing_app_id:
+                    print(f"Found existing application with ID: {existing_app_id}")
+                    create_access_policy(api_token, account_id, existing_app_id, email_pattern, bypass_paths)
+                    return existing_app_id
+        except:
+            pass
+        return None
+    except Exception as e:
+        print(f"Error creating access application: {e}")
+        return None
+
+def create_access_policy(
+    api_token: str,
+    account_id: str,
+    app_id: str,
+    email_pattern: str,
+    bypass_paths: Optional[List[str]] = None
+):
+    """Create an access policy for the application with email domain matching."""
+    headers = {
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    # For OTP-based authentication, we need to use a different approach
+    # The email pattern matching should be done through the include rules
+    # with an 'email_domain' selector for domain-based matching
+    
+    # Check if email pattern is a wildcard domain (e.g., *@domain.com)
+    if email_pattern.startswith('*@'):
+        # Extract domain from pattern
+        domain = email_pattern[2:]  # Remove '*@' prefix
+        include_rules = [
+            {
+                'email_domain': {
+                    'domain': domain
+                }
+            }
+        ]
+    else:
+        # Specific email address
+        include_rules = [
+            {
+                'email': {
+                    'email': email_pattern
+                }
+            }
+        ]
+    
+    # Main policy configuration
+    # Use 'allow' decision for identity-based policies (not 'non_identity')
+    policy_config = {
+        'name': 'Email OTP Policy',
+        'decision': 'allow',  # Changed from 'non_identity'
+        'include': include_rules
+    }
+    
+    try:
+        # Create the policy
+        data, status = make_api_request(
+            f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps/{app_id}/policies',
+            method='POST',
+            headers=headers,
+            data=policy_config
+        )
+        
+        if data.get('success'):
+            print("Access policy created successfully")
+        else:
+            print(f"Failed to create access policy: {data.get('errors')}")
+    except urllib.error.HTTPError as e:
+        print(f"Error creating access policy: {e}")
+        try:
+            error_data = e.read().decode('utf-8')
+            error_json = json.loads(error_data)
+            print(f"API Error Details: {error_json}")
+        except:
+            pass
+    except Exception as e:
+        print(f"Error creating access policy: {e}")
+
+def delete_access_application(
+    api_token: str,
+    account_id: str,
+    app_id: str
+) -> bool:
+    """Delete a Cloudflare Access Application."""
+    headers = {
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        data, status = make_api_request(
+            f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps/{app_id}',
+            method='DELETE',
+            headers=headers
+        )
+        
+        if data.get('success'):
+            print(f"Access application {app_id} deleted successfully")
+            return True
+        else:
+            print(f"Failed to delete access application: {data.get('errors')}")
+            return False
+    except urllib.error.HTTPError as e:
+        print(f"Error deleting access application: {e}")
+        try:
+            error_data = e.read().decode('utf-8')
+            error_json = json.loads(error_data)
+            print(f"API Error Details: {error_json}")
+        except:
+            pass
+        return False
+    except Exception as e:
+        print(f"Error deleting access application: {e}")
+        return False
+
+def remove_access_for_domain(
+    api_token: str,
+    account_id: str,
+    domain: str
+) -> bool:
+    """Remove all Access Applications for a specific domain."""
+    headers = {
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        # List all access applications
+        data, status = make_api_request(
+            f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps',
+            headers=headers
+        )
+        
+        if data.get('success') and data.get('result'):
+            deleted_count = 0
+            # Find and delete all applications matching the domain
+            for app in data['result']:
+                app_domain = app.get('domain', '')
+                # Match exact domain or domain with paths (for bypass apps)
+                if app_domain == domain or app_domain.startswith(f"{domain}/"):
+                    app_id = app.get('id')
+                    app_name = app.get('name', 'Unknown')
+                    print(f"Deleting application '{app_name}' (ID: {app_id})...")
+                    if delete_access_application(api_token, account_id, app_id):
+                        deleted_count += 1
+            
+            if deleted_count > 0:
+                print(f"\nSuccessfully deleted {deleted_count} Access Application(s)")
+                return True
+            else:
+                print(f"No Access Applications found for domain: {domain}")
+                return False
+        else:
+            print(f"Failed to list access applications: {data.get('errors')}")
+            return False
+    except Exception as e:
+        print(f"Error listing access applications: {e}")
+        return False
+
+def create_bypass_applications(
+    api_token: str,
+    account_id: str,
+    zone_id: str,
+    base_name: str,
+    hostname: str,
+    bypass_paths: List[str]
+):
+    """Create bypass Access Applications for specified paths.
+    
+    Cloudflare Access evaluates applications in order. Bypass applications
+    for specific paths should be created with higher precedence.
+    """
+    headers = {
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    for path in bypass_paths:
+        # Create a bypass application for this specific path
+        full_path = f"{hostname}{path}"
+        if not path.startswith('/'):
+            full_path = f"{hostname}/{path}"
+        
+        app_config = {
+            'name': f"{base_name} - Bypass {path}",
+            'domain': full_path,
+            'type': 'self_hosted',
+            'session_duration': '24h',
+            'auto_redirect_to_identity': False,
+            'allowed_idps': [],
+        }
+        
+        try:
+            # Create the bypass application
+            data, status = make_api_request(
+                f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps',
+                method='POST',
+                headers=headers,
+                data=app_config
+            )
+            
+            if data.get('success') and data.get('result'):
+                app_id = data['result']['id']
+                print(f"Bypass application created for path {path} with ID: {app_id}")
+                
+                # Create a bypass policy for this application
+                bypass_policy_config = {
+                    'name': f'Bypass All for {path}',
+                    'decision': 'bypass',
+                    'include': [
+                        {
+                            'everyone': {}
+                        }
+                    ]
+                }
+                
+                policy_data, policy_status = make_api_request(
+                    f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps/{app_id}/policies',
+                    method='POST',
+                    headers=headers,
+                    data=bypass_policy_config
+                )
+                
+                if policy_data.get('success'):
+                    print(f"Bypass policy created for path: {path}")
+                else:
+                    print(f"Warning: Failed to create bypass policy for {path}: {policy_data.get('errors')}")
+            else:
+                print(f"Warning: Failed to create bypass application for {path}: {data.get('errors')}")
+        except urllib.error.HTTPError as e:
+            print(f"Error creating bypass application for {path}: {e}")
+            try:
+                error_data = e.read().decode('utf-8')
+                error_json = json.loads(error_data)
+                print(f"API Error Details: {error_json}")
+            except:
+                pass
+        except Exception as e:
+            print(f"Error creating bypass application for {path}: {e}")
+
 def main():
     """Main function to parse arguments and create the tunnel."""
-
-    # --- Initial Check & Instructions ---
-    if not os.path.exists(CERT_FILE):
-        print("--- IMPORTANT: One-Time Manual Setup Required ---")
-        print("It seems you have not authenticated with Cloudflare yet.")
-        print("Please run the following command in your terminal first:")
-        print("cloudflared tunnel login")
-        print("This will open a browser window for you to log in.")
-        print("After successful login, run this script again.")
-        print("-" * 20)
-        sys.exit(0)
 
     parser = argparse.ArgumentParser(
         description="Automatically creates a Cloudflare tunnel.",
@@ -46,8 +492,7 @@ def main():
     )
     parser.add_argument(
         "--url",
-        required=True,
-        help="The local service URL (e.g., http://localhost:8000)"
+        help="The local service URL (e.g., http://localhost:8000). Required unless using --remove-access."
     )
     parser.add_argument(
         "--domain",
@@ -58,12 +503,82 @@ def main():
         "--subdomain",
         help="Optional custom subdomain. If not provided, one will be generated automatically."
     )
+    parser.add_argument(
+        "--access-email",
+        help="Email pattern for access authentication (e.g., *@mycompany.com). Requires CLOUDFLARE_API_TOKEN."
+    )
+    parser.add_argument(
+        "--access-path-bypass",
+        action='append',
+        help="Paths that bypass authentication (can be specified multiple times)."
+    )
+    parser.add_argument(
+        "--remove-access",
+        action='store_true',
+        help="Remove all Access Applications for the specified domain. Requires --domain and CLOUDFLARE_API_TOKEN."
+    )
 
     args = parser.parse_args()
+
+    # Handle --remove-access flag (early exit)
+    if args.remove_access:
+        print("--- Removing Access Applications ---")
+        api_token = get_api_token()
+        if not api_token:
+            print("Error: CLOUDFLARE_API_TOKEN is required to remove Access Applications.")
+            sys.exit(1)
+        
+        base_domain = args.domain
+        # If subdomain is specified, use it; otherwise we need to ask or list all
+        if args.subdomain:
+            public_hostname = f"{args.subdomain}.{base_domain}"
+            print(f"Removing Access Applications for: {public_hostname}")
+        else:
+            print("Error: --subdomain is required with --remove-access to specify which domain to remove.")
+            print("Example: --remove-access --domain kafkai.io --subdomain my-app")
+            sys.exit(1)
+        
+        # Get account ID
+        account_id = get_account_id(api_token)
+        if not account_id:
+            print("Error: Could not retrieve account ID.")
+            sys.exit(1)
+        
+        # Remove access applications
+        if remove_access_for_domain(api_token, account_id, public_hostname):
+            print("Access Applications removed successfully!")
+        else:
+            print("Failed to remove Access Applications.")
+            sys.exit(1)
+        
+        sys.exit(0)
+
+    # --- Initial Check & Instructions for tunnel operations ---
+    # Only require cert.pem if we're creating/running a tunnel (not just managing Access)
+    if not os.path.exists(CERT_FILE):
+        print("--- IMPORTANT: One-Time Manual Setup Required ---")
+        print("It seems you have not authenticated with Cloudflare yet.")
+        print("Please run the following command in your terminal first:")
+        print("cloudflared tunnel login")
+        print("This will open a browser window for you to log in.")
+        print("After successful login, run this script again.")
+        print()
+        print("Note: If you only want to manage Access Applications (using --remove-access),")
+        print("you don't need cloudflared login. Just set CLOUDFLARE_API_TOKEN environment variable.")
+        print("-" * 20)
+        sys.exit(0)
+
+    # Validate that --url is provided when not removing access
+    if not args.url:
+        print("Error: --url is required (unless using --remove-access)")
+        parser.print_help()
+        sys.exit(1)
 
     local_url = args.url
     base_domain = args.domain
     custom_subdomain = args.subdomain
+    access_email = args.access_email
+    access_path_bypass = args.access_path_bypass
 
     # Use a custom subdomain or generate one automatically
     if custom_subdomain:
@@ -78,6 +593,10 @@ def main():
     print(f"Tunnel Name: {tunnel_name}")
     print(f"Public URL: {public_hostname}")
     print(f"Local Service: {local_url}")
+    if access_email:
+        print(f"Access Email Pattern: {access_email}")
+        if access_path_bypass:
+            print(f"Bypass Paths: {', '.join(access_path_bypass)}")
     print("-" * 20)
 
     tunnel_uuid = None
@@ -167,6 +686,50 @@ ingress:
     # --- Create DNS record ---
     print("--- Creating DNS Record ---")
     subprocess.run(["cloudflared", "tunnel", "route", "dns", tunnel_name, public_hostname], check=True)
+
+    # --- Create Access Application if email pattern is specified ---
+    if access_email:
+        print("--- Creating Access Application ---")
+        api_token = get_api_token()
+        if api_token:
+            account_id = get_account_id(api_token)
+            zone_id = get_zone_id(api_token, base_domain)
+            
+            if account_id and zone_id:
+                # Create bypass applications first (they should have higher priority)
+                if access_path_bypass:
+                    print("Creating bypass applications for specified paths...")
+                    create_bypass_applications(
+                        api_token,
+                        account_id,
+                        zone_id,
+                        f"Access for {tunnel_name}",
+                        public_hostname,
+                        access_path_bypass
+                    )
+                
+                # Create main access application
+                app_id = create_access_application(
+                    api_token,
+                    account_id,
+                    zone_id,
+                    f"Access for {tunnel_name}",
+                    public_hostname,
+                    access_email,
+                    access_path_bypass
+                )
+                if app_id:
+                    print(f"Access application configured successfully!")
+                    print(f"Users matching '{access_email}' will receive OTP codes to access the service.")
+                    if access_path_bypass:
+                        print(f"Paths {', '.join(access_path_bypass)} are configured to bypass authentication.")
+                else:
+                    print("Warning: Failed to create access application. Tunnel will be created without authentication.")
+            else:
+                print("Warning: Could not get account or zone ID. Tunnel will be created without authentication.")
+        else:
+            print("Warning: No API token available. Tunnel will be created without authentication.")
+            print("To enable access authentication, set CLOUDFLARE_API_TOKEN environment variable.")
 
     # --- Run the tunnel ---
     print("--- Running the Tunnel ---")
