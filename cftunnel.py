@@ -115,6 +115,36 @@ def get_zone_id(api_token: str, domain: str) -> Optional[str]:
         print(f"Error getting zone ID: {e}")
         return None
 
+def get_existing_access_application(
+    api_token: str,
+    account_id: str,
+    domain: str
+) -> Optional[str]:
+    """Check if an Access Application already exists for the given domain."""
+    headers = {
+        'Authorization': f'Bearer {api_token}',
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        # List all access applications
+        response = requests.get(
+            f'https://api.cloudflare.com/client/v4/accounts/{account_id}/access/apps',
+            headers=headers
+        )
+        response.raise_for_status()
+        data = response.json()
+        
+        if data.get('success') and data.get('result'):
+            # Look for an application with matching domain
+            for app in data['result']:
+                if app.get('domain') == domain:
+                    return app.get('id')
+        return None
+    except Exception as e:
+        print(f"Error checking for existing access application: {e}")
+        return None
+
 def create_access_application(
     api_token: str,
     account_id: str,
@@ -129,6 +159,17 @@ def create_access_application(
         'Authorization': f'Bearer {api_token}',
         'Content-Type': 'application/json'
     }
+    
+    # Check if application already exists for this domain
+    existing_app_id = get_existing_access_application(api_token, account_id, domain)
+    if existing_app_id:
+        print(f"Access application already exists with ID: {existing_app_id}")
+        print("Updating existing application with new policy...")
+        
+        # Create or update the access policy
+        create_access_policy(api_token, account_id, existing_app_id, email_pattern, bypass_paths)
+        
+        return existing_app_id
     
     # Build the application configuration
     app_config = {
@@ -173,6 +214,15 @@ def create_access_application(
             try:
                 error_data = e.response.json()
                 print(f"API Error Details: {error_data}")
+                
+                # Check if it's a conflict error (application already exists)
+                if e.response.status_code == 409:
+                    print("Application already exists. Attempting to retrieve and use existing application...")
+                    existing_app_id = get_existing_access_application(api_token, account_id, domain)
+                    if existing_app_id:
+                        print(f"Found existing application with ID: {existing_app_id}")
+                        create_access_policy(api_token, account_id, existing_app_id, email_pattern, bypass_paths)
+                        return existing_app_id
             except:
                 print(f"Response text: {e.response.text}")
         return None
