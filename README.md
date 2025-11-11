@@ -58,8 +58,43 @@ python cftunnel.py --remove-access --domain kafkai.io --subdomain flyby-extensio
 ```
 
 This will:
+- Prompt for confirmation before proceeding
 - Remove the main Access Application for the domain
 - Remove any bypass applications for paths (e.g., `/api/stripe/`)
 - Clean up all associated policies
 
 **Note:** You need `CLOUDFLARE_API_TOKEN` set and the `--subdomain` parameter to specify which domain to clean up.
+
+To skip the confirmation prompt, add the `-y` flag:
+
+```
+python cftunnel.py --remove-access --domain kafkai.io --subdomain flyby-extension-stargate -y
+```
+
+## Removing Tunnels
+
+To completely remove a tunnel and all its associated resources (DNS records, Access Applications, and configuration files):
+
+```
+python cftunnel.py --remove --domain kafkai.io --subdomain flyby-extension-stargate
+```
+
+This will:
+- Display the tunnel name and ID that will be removed
+- Prompt for confirmation before proceeding
+- Delete all Access Applications for the domain (if `CLOUDFLARE_API_TOKEN` is set)
+- Remove the DNS record (if `CLOUDFLARE_API_TOKEN` is set)
+- Delete the tunnel
+- Clean up local configuration files (`.yml` and credentials `.json`)
+
+**Note:** 
+- The `--subdomain` parameter is required to specify which tunnel to remove.
+- `CLOUDFLARE_API_TOKEN` is required to remove DNS records and Access Applications. Without it, only the tunnel and local files will be removed.
+
+### Skip Confirmation
+
+To skip the confirmation prompt (useful for scripts), use the `-y` or `--noinput` flag:
+
+```
+python cftunnel.py --remove --domain kafkai.io --subdomain flyby-extension-stargate -y
+```
