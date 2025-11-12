@@ -1,5 +1,5 @@
 # cftunnel
-Tools for creating and managing CloudFlare ZeroTrust tunnels
+Tools for creating and managing CloudFlare ZeroTrust tunnels. Download cloudflared [here](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/downloads/).
 
 Run `cloudflared tunnel login` first, then run:-
 
