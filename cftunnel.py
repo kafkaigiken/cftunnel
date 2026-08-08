@@ -513,6 +513,12 @@ def main():
         help="Paths that bypass authentication (can be specified multiple times)."
     )
     parser.add_argument(
+        "--ingress",
+        action='append',
+        help="Extra ingress rule: 'path:service_url' (e.g. '/mcp*:http://localhost:8001'). "
+             "Rules are inserted before the catch-all. Order preserved."
+    )
+    parser.add_argument(
         "--remove-access",
         action='store_true',
         help="Remove all Access Applications for the specified domain. Requires --domain and CLOUDFLARE_API_TOKEN."
@@ -753,6 +759,7 @@ def main():
     custom_subdomain = args.subdomain
     access_email = args.access_email
     access_path_bypass = args.access_path_bypass
+    extra_ingress = args.ingress or []
 
     # Use a custom subdomain or generate one automatically
     if custom_subdomain:
@@ -848,7 +855,22 @@ tunnel: {tunnel_name}
 credentials-file: {CREDENTIALS_FILE}
 
 ingress:
-  - hostname: {public_hostname}
+"""
+    # Extra ingress rules (path-based routing) — inserted before the catch-all
+    for rule in extra_ingress:
+        parts = rule.split(':', 1)
+        if len(parts) != 2:
+            print(f"Warning: skipping malformed --ingress rule '{rule}' (expected 'path:service_url')")
+            continue
+        path, service_url = parts[0].strip(), parts[1].strip()
+        config_content += f"""  - hostname: {public_hostname}
+    path: {path}
+    service: {service_url}
+    originRequest:
+      originServerName: {public_hostname}
+"""
+    # Default catch-all: everything to the local service
+    config_content += f"""  - hostname: {public_hostname}
     service: {local_url}
     originRequest:
       originServerName: {public_hostname}
