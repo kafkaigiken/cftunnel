@@ -556,7 +556,7 @@ def main():
                 text=True
             )
             info_output = info_result.stdout + info_result.stderr
-            match = re.search(r'(?:Tunnel ID|tunnel|id:)\s*([a-f0-9-]{36})', info_output, re.IGNORECASE)
+            match = re.search(r'(?:Tunnel ID|tunnel|ID:)\s*([a-f0-9-]{36})', info_output, re.IGNORECASE)
             if match:
                 tunnel_id = match.group(1)
         except subprocess.CalledProcessError:
@@ -801,7 +801,7 @@ def main():
             )
             # Check both stdout and stderr for the UUID with a more flexible pattern
             info_output = info_result.stdout + info_result.stderr
-            match = re.search(r'(?:Tunnel ID|tunnel) ([a-f0-9-]+)', info_output)
+            match = re.search(r'(?:Tunnel ID|tunnel|ID:)\s*([a-f0-9-]{36})', info_output, re.IGNORECASE)
             if match:
                 tunnel_uuid = match.group(1)
     except subprocess.CalledProcessError as e:
@@ -817,7 +817,7 @@ def main():
             )
             # Check both stdout and stderr for the UUID with a more flexible pattern
             info_output = info_result.stdout + info_result.stderr
-            match = re.search(r'(?:Tunnel ID|tunnel) ([a-f0-9-]+)', info_output)
+            match = re.search(r'(?:Tunnel ID|tunnel|ID:)\s*([a-f0-9-]{36})', info_output, re.IGNORECASE)
             if match:
                 tunnel_uuid = match.group(1)
                 print(f"Found existing tunnel with ID {tunnel_uuid}.")
